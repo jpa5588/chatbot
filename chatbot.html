@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NFL Chat</title>
+  <style>
+    :root { --bg:#f6f7f9; --me:#dff0ff; --bot:#fff; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: Arial, sans-serif; background:var(--bg); display:flex; height:100vh; }
+    .chat { max-width:900px; margin:auto; width:100%; display:flex; flex-direction:column; gap:12px; padding:20px; }
+    .messages { background:#e9edf3; border-radius:12px; padding:16px; overflow:auto; flex:1; }
+    .msg { display:inline-block; padding:10px 12px; border-radius:12px; margin:8px 0; max-width:100%; }
+    .me  { background:var(--me); align-self:flex-end; }
+    .bot { background:var(--bot); align-self:flex-start; }
+    .inputbar { display:flex; gap:10px; }
+    input[type=text] { flex:1; padding:12px; border:1px solid #cbd3df; border-radius:10px; }
+    button { padding:12px 16px; border:0; background:#2563eb; color:#fff; border-radius:10px; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    table { border-collapse: collapse; width:100%; }
+    th, td { border:1px solid #ddd; padding:6px 8px; }
+    th { background:#f4f4f4; }
+    .hint { color:#555; font-size:13px; margin-top:-6px; }
+    .error { color:#b00020; }
+  </style>
+</head>
+<body>
+  <div class="chat">
+    <div class="messages" id="messages">
+      <div class="msg bot">
+        Hi! Ask me for NFL standings by typing a season like
+        <code>2024REG</code>, <code>2024PRE</code>, or <code>2024POST</code>.
+      </div>
+    </div>
+
+    <div class="hint">Example: <code>2024reg</code></div>
+    <form class="inputbar" id="form">
+      <input id="prompt" type="text" placeholder="Type a season (e.g., 2024reg) and press Enter…" autocomplete="off">
+      <button id="sendBtn" type="submit">Send</button>
+    </form>
+  </div>
+
+  <script>
+    // ===== API Config =====
+    const API_KEY  = "3751b77068144fee9a5e5e5058ff5eb1";
+    const API_BASE = "https://api.sportsdata.io/v3/nfl/scores/xml/Standings";
+
+    // ===== Helpers =====
+    const $ = s => document.querySelector(s);
+    const messages = $("#messages");
+    const seasonRegex = /^\s*(\d{4})(reg|pre|post)\s*$/i;
+
+    function buildUrl(season) {
+      return `${API_BASE}/${encodeURIComponent(season)}?key=${encodeURIComponent(API_KEY)}`;
+    }
+    function addMsg(html, who="bot") {
+      const div = document.createElement("div");
+      div.className = `msg ${who}`;
+      div.innerHTML = html;
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+    }
+    const txt = (node, tag) => node.getElementsByTagName(tag)[0]?.textContent?.trim() ?? "";
+
+    // Render standings XML -> HTML table
+    function renderStandingsTable(xmlDoc) {
+      const items = Array.from(xmlDoc.getElementsByTagName("Standing"));
+      if (!items.length) return "<div>No rows returned.</div>";
+
+      const rows = items.map((s,i)=>{
+        const division = txt(s,"Division");
+        const rank     = txt(s,"DivisionRank");
+        const team     = txt(s,"Name");
+        const wins     = txt(s,"Wins");
+        const losses   = txt(s,"Losses");
+        const ties     = txt(s,"Ties");
+        const pct      = txt(s,"Percentage");
+		
+        return `<tr>
+          <td>${division}</td>
+		  <td>${rank}</td>
+		  <td>${team}</td>
+          <td>${wins}</td>
+		  <td>${losses}</td>
+		  <td>${ties}</td>
+		  <td>${pct}</td>
+        </tr>`;
+      }).join("");
+
+      return `<table>
+        <thead><tr>
+			<th>Division</th>
+			<th>Rank</th>
+			<th>Team</th>
+			<th>W</th>
+			<th>L</th>
+			<th>T</th>
+			<th>Pct</th>
+			</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+    }
+
+    async function fetchStandings(season) {
+      const url = buildUrl(season);
+      const res = await fetch(url, { headers: { "Accept":"application/xml" }});
+      const xmlText = await res.text();
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+      if (doc.getElementsByTagName("parsererror").length) throw new Error("Invalid XML received");
+      return doc;
+    }
+
+    // ===== Chat flow =====
+    $("#form").addEventListener("submit", async (e)=>{
+      e.preventDefault();
+      const input = $("#prompt");
+      const text = input.value.trim();
+      if (!text) return;
+
+      addMsg(text, "me");
+      input.value = "";
+      const m = text.match(seasonRegex);
+
+      if (!m) {
+        addMsg("Please enter a season like <code>2024REG</code>, <code>2024PRE</code>, or <code>2024POST</code>.", "bot");
+        return;
+      }
+
+      const season = `${m[1]}${m[2].toUpperCase()}`;
+      const thinkingId = addMsg("Fetching standings for <strong>"+season+"</strong>…", "bot");
+
+      try {
+        const xmlDoc = await fetchStandings(season);
+        const tableHtml = renderStandingsTable(xmlDoc);
+        // Replace the last “fetching…” message with the table
+        messages.lastElementChild.innerHTML = `<div>Standings for <strong>${season}</strong></div>${tableHtml}`;
+      } catch (err) {
+        messages.lastElementChild.innerHTML = `<div class="error">Failed to load ${season}: ${err.message}</div>`;
+      }
+    });
+  </script>
+</body>
+</html>
