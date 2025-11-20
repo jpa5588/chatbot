@@ -41,8 +41,7 @@
 
   <script>
     // ===== API Config =====
-    const API_KEY  = "3751b77068144fee9a5e5e5058ff5eb1";
-    const API_BASE = "https://api.sportsdata.io/v3/nfl/scores/xml/Standings";
+    const middleware_server_url = "/api/middlewarelogic.php"; 
 
     // ===== Helpers =====
     const $ = s => document.querySelector(s);
@@ -50,8 +49,8 @@
     const seasonRegex = /^\s*(\d{4})(reg|pre|post)\s*$/i;
 
     function buildUrl(season) {
-      return `${API_BASE}/${encodeURIComponent(season)}?key=${encodeURIComponent(API_KEY)}`;
-    }
+		return `${middleware_server_url}?season=${encodeURIComponent(season)}`;
+	}
     function addMsg(html, who="bot") {
       const div = document.createElement("div");
       div.className = `msg ${who}`;
