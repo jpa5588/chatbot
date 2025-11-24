@@ -2,7 +2,7 @@
 // middlewarelogic.php (simple: fetch → store raw → parse to table → return XML)
 
 //Default xml header to send back to the ui server
-header('Content-Type: application/xml; charset=utf-8');
+header('Content-Type: application/json; charset=UTF-8');
 
 //Prevents any extra info, like blank lines that exist outside of the xml, issue with that during testing
 ob_start();
@@ -14,14 +14,27 @@ require_once __DIR__ . '/db_config.php';
 function mw_log(string $msg): void {
     error_log('[NFL_MW] ' . $msg);
 }
+
+// Read query string parameters
+$season = $_GET['season'] ?? '';
+$mode   = $_GET['mode']   ?? 'standings';
+
+$season = trim($season);
+$mode   = trim($mode);
+
+if ($mode !== 'standings') {
+    http_response_code(400);
+    echo "ERROR: Unsupported mode";
+    exit;
+}
 //Validate the input is accurate, standings endpoint needs to see 2024REG, 2024PRE, or 2024POST in order for request to process
 //Store as a variable called $season
 //Convert input to upper if someone types lowercase
 //If input is not any of those, then throw 400 error code and echo error
-$season = isset($_GET['season']) ? strtoupper(trim($_GET['season'])) : '';
-if ($season === '') {
+// Basic season format validation
+if (!preg_match('/^[0-9]{4}(REG|POST)$/', $season)) {
     http_response_code(400);
-    echo "<error>Missing season parameter (e.g., 2024REG)</error>";
+    echo "ERROR: Invalid season format. Use something like 2024REG or 2024POST.";
     exit;
 }
 
@@ -29,6 +42,8 @@ if ($season === '') {
 //The pdo fucntion is a prebuilt php function that allows connection to a mysql database
 //Attempt to connect within 5 seconds, anything longer error their is an issue with the database connection
 try {
+	//$cfg = get_db_config();
+	
     $pdo = new PDO($cfg['db_host'], $cfg['db_user'], $cfg['db_password'], [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -36,35 +51,32 @@ try {
     ]);
 } catch (Throwable $e) {
     http_response_code(500);
-    echo "<error>Database connection failed</error>";
+    echo "ERROR: Database connection failed";
     exit;
 }
 
 //API key and url to store and use, standings is hardcoded to test our endpoint and passes the $season variable from earlier
 $apiKey = '3751b77068144fee9a5e5e5058ff5eb1';
 $apiUrl = "https://api.sportsdata.io/v3/nfl/scores/xml/Standings/{$season}";
+mw_log("{$season}: calling upstream API {$apiUrl}");
 
-//Context object that will allow php to process the request to the API for later, using a custom header to call it out
-//This came from sportsdata documentation for testing GETs in php
-$ctx = stream_context_create([
-    'http' => [
-        'method'  => 'GET',
-        'header'  => "Ocp-Apim-Subscription-Key: {$apiKey}\r\nAccept: application/xml\r\n",
-        'timeout' => 12
-    ]
+// Call external API via cURL
+$ch = curl_init($apiUrl);
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER     => [
+        "Ocp-Apim-Subscription-Key: {$apiKey}",
+    ],
+    CURLOPT_TIMEOUT        => 10,
 ]);
 
-//Test the xmlresponse using the built php function file_get_contents, passing in the apiURL, boolean value of false, and the ctx from earlier
-//If the test fails and returns false, then throw 502 error code signialing and issue trying to get the xml
-$xmlResponse = @file_get_contents($apiUrl, false, $ctx);
+$xmlResponse = curl_exec($ch);
+
 if ($xmlResponse === false) {
     http_response_code(502);
-    echo "<error>Failed to fetch upstream XML</error>";
+    echo "ERROR: Failed to call upstream API";
     exit;
 }
-//Test case to display entire xml from API
-//This was primarly used to verify API connection, callings, and base xml actually paints to the screen
-//echo($xmlResponse);
 
 //First line tells php to suppress xml error codes
 //Then start loadings the xml from xmlresponse to test and verify if they are good xml formats
@@ -73,7 +85,7 @@ libxml_use_internal_errors(true);
 $xml = simplexml_load_string($xmlResponse);
 if ($xml === false) {
     http_response_code(502);
-    echo "<error>Invalid XML from upstream</error>";
+    echo "ERROR: Invalid XML from upstream API";
     exit;
 }
 
@@ -81,15 +93,20 @@ mw_log("{$season}: starting DB cache write into standings_raw_data");
 
 //Once all the xml tests pass start storing the xml into the database
 try {
+	//$pdo->beginTransaction();
+	
     // Unique per endpoint_key; update if it already exists
     $stmt = $pdo->prepare("
-        INSERT INTO standings_raw_data (endpoint_key, xml_data)
-        VALUES (:key, :xml)
-        ON DUPLICATE KEY UPDATE xml_data = VALUES(xml_data)
+        INSERT INTO standings_raw_data (endpoint_key, xml_data, last_updated)
+        VALUES (:key, :xml, NOW())
+        ON DUPLICATE KEY UPDATE xml_data = VALUES(xml_data), last_updated = NOW();
     ");
 	mw_log("{$season}: executing DB cache write query");
 	
-    $stmt->execute([':key' => $season, ':xml' => $xmlResponse]);
+    $stmt->execute([
+        ':key' => $season,
+        ':xml'  => $xmlResponse,
+    ]);
 	
 	mw_log("{$season}: DB cache successful insert into standings_raw_data");
 } catch (Throwable $e) {
@@ -184,8 +201,10 @@ try {
 	//If anything should fail/error then run the rollback function to prevent issues on the database and then error
 } catch (Throwable $e) {
     $pdo->rollBack();
-    error_log("[standings_parsed] load failed for {$season}: " . $e->getMessage());
-    header("X-DB-Parsed: FAIL");
+     mw_log("{$season}: DB error while inserting parsed standings - " . $e->getMessage());
+    http_response_code(500);
+    echo "ERROR: Failed to store standings in database";
+    exit;
 }
 
 // Simple select query to return parsed standings for a given endpoint_key
@@ -204,32 +223,24 @@ try {
 	mw_log("{$season}: executing SELECT query on DB");
     $stmt->execute([':endpoint_key' => $season]);
 
-    header('Content-Type: application/xml; charset=UTF-8');
-    echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-    echo "<ArrayOfStanding>\n";
-
-	$rowCount = 0;
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-		$rowCount++;
-        echo "  <Standing>\n";
-        echo "    <Division>"     . htmlspecialchars($row['Division'])        . "</Division>\n";
-        echo "    <Name>"         . htmlspecialchars($row['Name'])            . "</Name>\n";
-        echo "    <Wins>"         . (int)$row['Wins']                          . "</Wins>\n";
-        echo "    <Losses>"       . (int)$row['Losses']                        . "</Losses>\n";
-        echo "    <Ties>"         . (int)$row['Ties']                          . "</Ties>\n";
-        echo "    <Percentage>"   . number_format((float)$row['Percentage'],3,'.','') . "</Percentage>\n";
-        echo "    <DivisionRank>" . (int)$row['DivisionRank']                  . "</DivisionRank>\n";
-        echo "  </Standing>\n";
-    }
+	$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 	
-    echo "</ArrayOfStanding>";
-	mw_log("{$season}: SELECT query completed, fetched {$rowCount} rows sending to UI");
+	$count = count($rows);
+	
+	mw_log("{$season}: SELECT query completed, fetched {$count} rows sending to UI");
+	
+    header('Content-Type: application/json; charset=UTF-8');
+	echo json_encode([
+        "count" => $count,
+        "rows"  => $rows
+    ]);
+	
     exit;
 } catch (Throwable $e) {
-    error_log('[standings_select] ' . $e->getMessage());
     http_response_code(500);
-    echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-    echo "<error>Failed to fetch standings</error>";
+    mw_log("{$season}: ERROR - Failed to fetch standings: " . $e->getMessage());
+    echo json_encode(["error" => "Failed to fetch standings"]);
+    exit;
 }
 
 exit;
