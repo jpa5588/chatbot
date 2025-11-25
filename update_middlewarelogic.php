@@ -15,26 +15,28 @@ function mw_log(string $msg): void {
     error_log('[NFL_MW] ' . $msg);
 }
 
-// Read query string parameters
+$mode   = $_GET['mode'] ?? '';
 $season = $_GET['season'] ?? '';
-$mode   = $_GET['mode']   ?? 'standings';
+$keyword = $_GET['keyword'] ?? 'Standings';
 
-$season = trim($season);
-$mode   = trim($mode);
+// Hardcode season for standings mode. UI no longer controls this.
+if ($mode === 'standings') {
+    $season = '2024REG';   // The key you want to hit every single time
+}
 
 if ($mode !== 'standings') {
     http_response_code(400);
     echo "ERROR: Unsupported mode";
     exit;
 }
-//Validate the input is accurate, standings endpoint needs to see 2024REG, 2024PRE, or 2024POST in order for request to process
-//Store as a variable called $season
-//Convert input to upper if someone types lowercase
-//If input is not any of those, then throw 400 error code and echo error
-// Basic season format validation
-if (!preg_match('/^[0-9]{4}(REG|POST)$/', $season)) {
+
+$endpoint = ucfirst(strtolower($keyword));
+
+// Only allow known-safe endpoints for now
+$allowedEndpoints = ['Standings']; // later: 'Scores', 'Games', etc.
+if (!in_array($endpoint, $allowedEndpoints, true)) {
     http_response_code(400);
-    echo "ERROR: Invalid season format. Use something like 2024REG or 2024POST.";
+    echo "ERROR: Unsupported keyword/endpoint.";
     exit;
 }
 
@@ -55,20 +57,65 @@ try {
     exit;
 }
 
-//API key and url to store and use, standings is hardcoded to test our endpoint and passes the $season variable from earlier
+//API key and url to store and use passing in the $endpoint value to call
 $apiKey = '3751b77068144fee9a5e5e5058ff5eb1';
-$apiUrl = "https://api.sportsdata.io/v3/nfl/scores/xml/Standings/{$season}";
-mw_log("{$season}: calling upstream API {$apiUrl}");
+$baseUrl = "https://api.sportsdata.io/v3/nfl/scores/xml";
+
+// Endpoints that require a season
+$seasonRequiredEndpoints = ['Standings'];
+
+//Test if Endpoint needs season or not
+if (in_array($endpoint, $seasonRequiredEndpoints, true)) {
+
+    if (empty($season)) {
+        http_response_code(400);
+        echo "Season is required for endpoint '{$endpoint}'.";
+        exit;
+    }
+
+    // Append season ONLY for endpoints that need it
+    $apiUrl = "{$baseUrl}/{$endpoint}/{$season}";
+
+} else {
+
+    // NO season for general endpoints
+    $apiUrl = "{$baseUrl}/{$endpoint}";
+}
+
+mw_log("Testing endpoint {$endpoint} using URL: {$apiUrl}");
 
 // Call external API via cURL
 $ch = curl_init($apiUrl);
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_HTTPHEADER     => [
-        "Ocp-Apim-Subscription-Key: {$apiKey}",
+        'Ocp-Apim-Subscription-Key: ' . $apiKey
     ],
-    CURLOPT_TIMEOUT        => 10,
 ]);
+
+$body     = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$curlErr  = curl_error($ch);
+curl_close($ch);
+
+// If test fails → return error JSON to UI
+if ($httpCode !== 200 || $body === false) {
+    mw_log("Endpoint test FAILED for {$endpoint}: HTTP {$httpCode}, cURL: {$curlErr}");
+    
+    http_response_code(502);
+    echo json_encode([
+        "ok"       => false,
+        "error"    => "Endpoint test failed",
+        "endpoint" => $endpoint,
+        "http"     => $httpCode,
+        "curl"     => $curlErr,
+    ]);
+    exit;
+}
+
+// If test succeeds → continue into your real standings logic
+mw_log("Endpoint test SUCCESS for {$endpoint}.");
+// e.g. parse XML in $body, insert into DB, build JSON rows for UI, etc.
 
 $xmlResponse = curl_exec($ch);
 
