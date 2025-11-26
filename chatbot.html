@@ -104,6 +104,14 @@
       background: linear-gradient(145deg, #2b2b2b, #1a1a1a);
       border: 1px solid #ffffff11;
     }
+	.bot.wide {
+	  max-width: 100% !important;
+	  width: 100%;
+	  align-self: flex-start;
+	  background: transparent; /* table has its own style */
+	  border: none;
+	  padding: 0;
+	}
 
     .inputbar {
       display: flex;
@@ -144,6 +152,9 @@
       margin-top: 10px;
       color: #fff;
       font-size: 14px;
+	  background: #0d0d0d;   /* ⬅ NEW: solid black background */
+      border-radius: 8px;     /* optional: cleaner shape */
+      overflow: hidden;       /* ensures rounded corners apply */
     }
     th, td {
       padding: 8px;
@@ -182,9 +193,9 @@
   <div class="chat">
     <div class="messages" id="messages">
       <div class="msg bot">
-		Welcome to the <strong>NFL Chat Center</strong>!<br>
-		Type <code>standings</code> to fetch the latest NFL standings.
-	</div>
+        Welcome to the <strong>NFL Chat Center</strong>!<br>
+        Type <code>standings</code> to fetch the latest NFL standings.
+      </div>
     </div>
 
     <div class="hint">Example: type <code>standings</code></div>
@@ -194,7 +205,7 @@
     </form>
   </div>
 
-   <script>
+  <script>
   // ===== API Config=====
   const middleware_server_url = "/api/middlewarelogic.php";
   const DEFAULT_KEYWORD = "standings";
@@ -220,88 +231,106 @@
     messages.scrollTop = messages.scrollHeight;
   }
 
-  // ===== Render standings with FILTER UI =====
-  function renderStandingsTable(apiData) {
-    const items = apiData.rows || [];
-    if (!items.length) return "<div>No standings found.</div>";
-
-    const data = items.map(r => ({
-      Division: r.Division,
-      Rank: r.DivisionRank,
-      Team: r.Name,
-      W: r.Wins,
-      L: r.Losses,
-      T: r.Ties,
-      Pct: r.Percentage
-    }));
-
-    const filterOptions = ["Division", "Rank", "Team", "W", "L", "T", "Pct"];
-
-    const filterBar = `
-      <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <label for="filterCol"><strong>Filter by:</strong></label>
-        <select id="filterCol" style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
-          <option value="">-- Select column --</option>
-          ${filterOptions.map(o => `<option value="${o}">${o}</option>`).join("")}
-        </select>
-        <input type="text" id="filterInput" placeholder="Enter value..."
-          style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
-        <button type="button" id="applyFilter" style="padding:6px 12px;border-radius:8px;background:linear-gradient(to right,#d50a0a,#a30707);color:#fff;border:none;cursor:pointer;">Apply</button>
-        <button type="button" id="clearFilter" style="padding:6px 12px;border-radius:8px;background:#555;color:#fff;border:none;cursor:pointer;">Clear</button>
-      </div>
-    `;
-
-    const tableHtml = `
-      ${filterBar}
-      <table id="standingsTable">
-        <thead>
-          <tr>${filterOptions.map(o => `<th>${o}</th>`).join("")}</tr>
-        </thead>
-        <tbody>
-          ${data.map(row => `
-            <tr>
-              <td>${row.Division}</td>
-              <td>${row.Rank}</td>
-              <td>${row.Team}</td>
-              <td>${row.W}</td>
-              <td>${row.L}</td>
-              <td>${row.T}</td>
-              <td>${row.Pct}</td>
-            </tr>`).join("")}
-        </tbody>
-      </table>
-    `;
-
-    setTimeout(() => {
-      const filterCol = $("#filterCol");
-      const filterInput = $("#filterInput");
-      const applyBtn = $("#applyFilter");
-      const clearBtn = $("#clearFilter");
-      const table = $("#standingsTable");
-
-      if (!filterCol || !filterInput || !applyBtn || !clearBtn || !table) return;
-
-      applyBtn.addEventListener("click", () => {
-        const col = filterCol.value;
-        const val = filterInput.value.trim().toLowerCase();
-        if (!col || !val) return;
-        const colIndex = filterOptions.indexOf(col);
-        const rows = table.querySelectorAll("tbody tr");
-        rows.forEach(r => {
-          const cell = r.children[colIndex].textContent.toLowerCase();
-          r.style.display = cell.includes(val) ? "" : "none";
-        });
-      });
-
-      clearBtn.addEventListener("click", () => {
-        filterCol.value = "";
-        filterInput.value = "";
-        table.querySelectorAll("tbody tr").forEach(r => (r.style.display = ""));
-      });
-    }, 0);
-
-    return tableHtml;
+  // Small helper to avoid HTML injection / broken layout
+  function escapeHtml(value) {
+    if (value === null || value === undefined) return "";
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
+
+  // ===== Generic table renderer for any endpoint =====
+  function renderStandingsTable(apiData) {
+  const rows = apiData.rows || [];
+  if (!rows.length) return "<div>No data found.</div>";
+
+  // 1) Figure out columns: use apiData.columns if provided, otherwise infer
+  let columns;
+  if (Array.isArray(apiData.columns) && apiData.columns.length) {
+    columns = apiData.columns;
+  } else {
+    columns = Object.keys(rows[0]);
+  }
+
+  // 2) Filter options are just the column names
+  const filterOptions = columns.slice(); // shallow copy
+
+  const filterBar = `
+    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <label for="filterCol"><strong>Filter by:</strong></label>
+      <select id="filterCol" style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
+        <option value="">-- Select column --</option>
+        ${filterOptions.map(o => `<option value="${o}">${o}</option>`).join("")}
+      </select>
+      <input type="text" id="filterInput" placeholder="Enter value..."
+        style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
+      <button type="button" id="applyFilter" style="padding:6px 12px;border-radius:8px;background:linear-gradient(to right,#d50a0a,#a30707);color:#fff;border:none;cursor:pointer;">Apply</button>
+      <button type="button" id="clearFilter" style="padding:6px 12px;border-radius:8px;background:#555;color:#fff;border:none;cursor:pointer;">Clear</button>
+    </div>
+  `;
+
+  // 3) Build the table using those dynamic columns
+  const headerHtml = columns
+    .map(col => `<th>${escapeHtml(col)}</th>`)
+    .join("");
+
+  const bodyHtml = rows
+    .map(row => {
+      const cells = columns
+        .map(col => `<td>${escapeHtml(row[col])}</td>`)
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("");
+
+  const tableHtml = `
+    ${filterBar}
+    <table id="resultsTable">
+      <thead>
+        <tr>${headerHtml}</tr>
+      </thead>
+      <tbody>
+        ${bodyHtml}
+      </tbody>
+    </table>
+  `;
+
+  // 4) Wire up the filter behavior *after* the HTML is injected
+  setTimeout(() => {
+    const filterCol  = document.getElementById("filterCol");
+    const filterInput = document.getElementById("filterInput");
+    const applyBtn   = document.getElementById("applyFilter");
+    const clearBtn   = document.getElementById("clearFilter");
+    const table      = document.getElementById("resultsTable");
+
+    if (!filterCol || !filterInput || !applyBtn || !clearBtn || !table) return;
+
+    applyBtn.addEventListener("click", () => {
+      const col = filterCol.value;
+      const val = filterInput.value.trim().toLowerCase();
+      if (!col || !val) return;
+
+      const colIndex = filterOptions.indexOf(col);
+      const rowsEls = table.querySelectorAll("tbody tr");
+
+      rowsEls.forEach(r => {
+        const cellText = (r.children[colIndex]?.textContent || "").toLowerCase();
+        r.style.display = cellText.includes(val) ? "" : "none";
+      });
+    });
+
+    clearBtn.addEventListener("click", () => {
+      filterCol.value = "";
+      filterInput.value = "";
+      table.querySelectorAll("tbody tr").forEach(r => (r.style.display = ""));
+    });
+  }, 0);
+
+  return tableHtml;
+}
 
   // ===== Fetch from your middleware (JSON) =====
   async function fetchStandings(keyword = DEFAULT_KEYWORD) {
@@ -346,15 +375,17 @@
     try {
       const data = await fetchStandings(keyword); // { count, rows }
       const tableHtml = renderStandingsTable(data);
-      messages.lastElementChild.innerHTML = `
-        <div>${keyword.charAt(0).toUpperCase() + keyword.slice(1)} for current season — ${data.count} teams found</div>
-        ${tableHtml}
-      `;
+      const last = messages.lastElementChild;
+		last.classList.add("wide"); 
+		last.innerHTML = `
+		<div>${keyword.charAt(0).toUpperCase() + keyword.slice(1)} — ${data.rows.length} record(s)</div>
+		${tableHtml}
+	`;
     } catch (err) {
       messages.lastElementChild.innerHTML =
         `<div class="error">Failed to load ${keyword}: ${err.message}</div>`;
     }
   });
-</script>
+  </script>
 </body>
 </html>
