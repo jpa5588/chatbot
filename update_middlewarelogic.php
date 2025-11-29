@@ -15,31 +15,31 @@ function mw_log(string $msg): void {
     error_log('[NFL_MW] ' . $msg);
 }
 
-$mode   = $_GET['mode'] ?? '';
-$season = $_GET['season'] ?? '';
-$keyword = $_GET['keyword'] ?? 'Standings';
+// Read query string parameters
+$season   = $_GET['season']  ?? '';    // currently not using this to hardcode it later
+$mode     = $_GET['mode']    ?? '';
+$keyword  = $_GET['keyword'] ?? '';    // New: keyword passed from UI ("standings", etc.)
 
-// Hardcode season for standings mode. UI no longer controls this.
-if ($mode === 'standings') {
-    $season = '2024REG';   // The key you want to hit every single time
-}
-
-if ($mode !== 'standings') {
+// Basic validation for required params
+if ($mode === '') {
     http_response_code(400);
-    echo "ERROR: Unsupported mode";
+    echo json_encode(["error" => "Missing required parameter: mode"]);
     exit;
 }
 
-$endpoint = ucfirst(strtolower($keyword));
-
-// Only allow known-safe endpoints for now
-$allowedEndpoints = ['Standings']; // later: 'Scores', 'Games', etc.
-if (!in_array($endpoint, $allowedEndpoints, true)) {
+if ($keyword === '') {
     http_response_code(400);
-    echo "ERROR: Unsupported keyword/endpoint.";
+    echo json_encode(["error" => "Missing required parameter: keyword"]);
     exit;
 }
 
+// This mapping converts a keyword from the UI into a SportsData.io endpoint name.
+// For now, your app uses only "standings" → "Standings".
+$keywordToEndpoint = [
+    'standings' => 'Standings',
+	'player' => 'PlayersByAvailable',
+	'players' => 'PlayersByAvailable',
+];
 //Attempt to connect to database using the config file from earlier using the pdo fucntion, pass in the parameters from the config
 //The pdo fucntion is a prebuilt php function that allows connection to a mysql database
 //Attempt to connect within 5 seconds, anything longer error their is an issue with the database connection
@@ -57,14 +57,42 @@ try {
     exit;
 }
 
-//API key and url to store and use passing in the $endpoint value to call
+// Normalize keyword from UI ("Standings", "standings", "STANDINGS", etc.)
+$keywordLower = strtolower(trim($keyword));
+
+if (!isset($keywordToEndpoint[$keywordLower])) {
+    http_response_code(400);
+    echo json_encode([
+        "error"   => "Unsupported keyword",
+        "keyword" => $keyword,
+    ]);
+    exit;
+}
+
+$endpoint = $keywordToEndpoint[$keywordLower];
+
+//Hardcode the season value for now we only want 2024REG
+//How the program works is the xml api returns only up to date data so calling every time will always be up the latest season info
+$season = "2024REG";
+
+mw_log("{$season}: starting middleware with mode={$mode}, keyword={$keyword}, endpoint={$endpoint}");
+
+// Only support the standings mode for now
+if ($mode !== 'standings') {
+    http_response_code(400);
+    echo json_encode(["error" => "Unsupported mode. Currently only 'standings' is implemented."]);
+    exit;
+}
+
+//Call the nfl api using the key set aside from earlier
 $apiKey = '3751b77068144fee9a5e5e5058ff5eb1';
+
+//Better base url to the api where adding the season is a later on option
 $baseUrl = "https://api.sportsdata.io/v3/nfl/scores/xml";
 
-// Endpoints that require a season
+//Endpoints that require a season
 $seasonRequiredEndpoints = ['Standings'];
 
-//Test if Endpoint needs season or not
 if (in_array($endpoint, $seasonRequiredEndpoints, true)) {
 
     if (empty($season)) {
@@ -98,196 +126,408 @@ $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlErr  = curl_error($ch);
 curl_close($ch);
 
-// If test fails → return error JSON to UI
+// If test fails → return error to UI
 if ($httpCode !== 200 || $body === false) {
     mw_log("Endpoint test FAILED for {$endpoint}: HTTP {$httpCode}, cURL: {$curlErr}");
-    
+
     http_response_code(502);
-    echo json_encode([
-        "ok"       => false,
-        "error"    => "Endpoint test failed",
-        "endpoint" => $endpoint,
-        "http"     => $httpCode,
-        "curl"     => $curlErr,
-    ]);
+    echo "ERROR: Endpoint {$endpoint} test failed (HTTP {$httpCode})";
     exit;
 }
 
-// If test succeeds → continue into your real standings logic
-mw_log("Endpoint test SUCCESS for {$endpoint}.");
-// e.g. parse XML in $body, insert into DB, build JSON rows for UI, etc.
+mw_log("Endpoint {$endpoint} SUCCESS.");
 
-$xmlResponse = curl_exec($ch);
-
-if ($xmlResponse === false) {
-    http_response_code(502);
-    echo "ERROR: Failed to call upstream API";
-    exit;
-}
-
-//First line tells php to suppress xml error codes
-//Then start loadings the xml from xmlresponse to test and verify if they are good xml formats
-//If not then throw a 502 error telling us an issue with the xml
-libxml_use_internal_errors(true);
-$xml = simplexml_load_string($xmlResponse);
+// ---------------------------
+// Parse XML
+// ---------------------------
+$xml = @simplexml_load_string($body);
 if ($xml === false) {
-    http_response_code(502);
-    echo "ERROR: Invalid XML from upstream API";
+    http_response_code(500);
+    mw_log("{$season}: ERROR - Failed to parse XML from API for endpoint {$endpoint}");
+    echo json_encode(["error" => "Failed to parse XML from API"]);
     exit;
 }
 
-mw_log("{$season}: starting DB cache write into standings_raw_data");
+// Raw XML string for caching
+$xmlResponse = $body;
 
-//Once all the xml tests pass start storing the xml into the database
-try {
-	//$pdo->beginTransaction();
-	
-    // Unique per endpoint_key; update if it already exists
-    $stmt = $pdo->prepare("
+if ($endpoint === 'Standings') {
+    // ==========================================
+    // Standings: cache → standings_raw_data, then upsert → standings_parsed
+    // ==========================================
+
+    // 1) Cache raw XML into standings_raw_data (key = season, e.g. 2024REG)
+    try {
+        mw_log("{$season}: caching raw XML into standings_raw_data with key={$season}");
+
+        $stmt = $pdo->prepare("
         INSERT INTO standings_raw_data (endpoint_key, xml_data, last_updated)
         VALUES (:key, :xml, NOW())
         ON DUPLICATE KEY UPDATE xml_data = VALUES(xml_data), last_updated = NOW();
     ");
-	mw_log("{$season}: executing DB cache write query");
-	
-    $stmt->execute([
-        ':key' => $season,
-        ':xml'  => $xmlResponse,
-    ]);
-	
-	mw_log("{$season}: DB cache successful insert into standings_raw_data");
-} catch (Throwable $e) {
-    // Don’t break the response if cache write fails; just log
-    error_log("[standings_raw_data] insert/update failed for {$season}: " . $e->getMessage());
-}
 
-mw_log("{$season}: starting DB cache write into standings_parsed");
-//Parse the xml data from earlier and breakout the key data we find important
-try {
-    $pdo->beginTransaction();
+        $stmt->execute([
+            ':key' => $season,
+            ':xml' => $xmlResponse,
+        ]);
 
-    //For testing purposes delete from the table and start over to give is a clean slate
-    $pdo->prepare("DELETE FROM standings_parsed WHERE endpoint_key = ?")->execute([$season]);
-
-
-	//Create the insert statement to use for later to actually insert the data into a new table
-	//Note Primary key is set to auto increment for each row inserted
-    $ins = $pdo->prepare("
-    INSERT INTO standings_parsed
-		(`endpoint_key`,`SeasonType`,`Season`,`Conference`,`Division`,`Team`,`Name`,
-		 `Wins`,`Losses`,`Ties`,`Percentage`,
-		 `PointsFor`,`PointsAgainst`,`NetPoints`,`Touchdowns`,
-		 `DivisionWins`,`DivisionLosses`,`ConferenceWins`,`ConferenceLosses`,
-		 `TeamID`,`DivisionTies`,`ConferenceTies`,
-		 `GlobalTeamID`,`DivisionRank`,`ConferenceRank`,
-		 `HomeWins`,`HomeLosses`,`HomeTies`,
-		 `AwayWins`,`AwayLosses`,`AwayTies`,`Streak`)
-		VALUES
-		(:endpoint_key,:SeasonType,:Season,:Conference,:Division,:Team,:Name,
-		 :Wins,:Losses,:Ties,:Percentage,
-		 :PointsFor,:PointsAgainst,:NetPoints,:Touchdowns,
-		 :DivisionWins,:DivisionLosses,:ConferenceWins,:ConferenceLosses,
-		 :TeamID,:DivisionTies,:ConferenceTies,
-		 :GlobalTeamID,:DivisionRank,:ConferenceRank,
-		 :HomeWins,:HomeLosses,:HomeTies,
-		 :AwayWins,:AwayLosses,:AwayTies,:Streak)
-		");
-
-	//Set insert to 0 to track number of inserts
-    $inserted = 0;
-	
-	mw_log("{$season}: DB cache started insert to standings_parsed");
-	//foreach xml value with the phrase standing in its xml base store each in an array
-	//The begin inserting the values we need, matching it to the insert from earlier on the key values we created
-	//I.E :endpoint_key will point to $season
-	//:team will convert to a string and using the current value of $s parse the phrase Team and store it
-	//Continue doing this for every value in the array
-    foreach ($xml->Standing as $s) {
-    $ins->execute([
-		':endpoint_key'     => $season,
-		':SeasonType'     => (int)($s->SeasonType ?? 0),
-		':Season'         => (int)($s->Season ?? 0),
-		':Conference'     => (string)($s->Conference ?? ''),
-		':Division'       => (string)($s->Division ?? ''),
-		':Team'           => (string)($s->Team ?? ''),
-		':Name'           => (string)($s->Name ?? ''),
-		':Wins'           => (int)($s->Wins ?? 0),
-		':Losses'         => (int)($s->Losses ?? 0),
-		':Ties'           => (int)($s->Ties ?? 0),
-		':Percentage'     => (float)($s->Percentage ?? 0),
-		':PointsFor'      => (int)($s->PointsFor ?? 0),
-		':PointsAgainst'  => (int)($s->PointsAgainst ?? 0),
-		':NetPoints'      => (int)($s->NetPoints ?? 0),
-		':Touchdowns'     => (int)($s->Touchdowns ?? 0),
-		':DivisionWins'   => (int)($s->DivisionWins ?? 0),
-		':DivisionLosses' => (int)($s->DivisionLosses ?? 0),
-		':ConferenceWins' => (int)($s->ConferenceWins ?? 0),
-		':ConferenceLosses'=> (int)($s->ConferenceLosses ?? 0),
-		':TeamID'         => (int)($s->TeamID ?? 0),
-		':DivisionTies'   => (int)($s->DivisionTies ?? 0),
-		':ConferenceTies' => (int)($s->ConferenceTies ?? 0),
-		':GlobalTeamID'   => (int)($s->GlobalTeamID ?? 0),
-		':DivisionRank'   => (int)($s->DivisionRank ?? 0),
-		':ConferenceRank' => (int)($s->ConferenceRank ?? 0),
-		':HomeWins'       => (int)($s->HomeWins ?? 0),
-		':HomeLosses'     => (int)($s->HomeLosses ?? 0),
-		':HomeTies'       => (int)($s->HomeTies ?? 0),
-		':AwayWins'       => (int)($s->AwayWins ?? 0),
-		':AwayLosses'     => (int)($s->AwayLosses ?? 0),
-		':AwayTies'       => (int)($s->AwayTies ?? 0),
-		':Streak'         => (int)($s->Streak ?? 0),
-    ]);
-        $inserted++;
+        mw_log("{$season}: raw XML cache successful for standings_raw_data");
+    } catch (Throwable $e) {
+        mw_log("standings_raw_data insert/update failed for key={$season}: " . $e->getMessage());
+        // Do not abort; continue on to parsed upsert.
     }
-	mw_log("{$season}: DB parsed standings insert completed total rows inserted: $inserted");
-	//run the commit function to ensure the database saves the info
-    $pdo->commit();
-    // Log messages the raw was ok and the parsed data was inserted
-    header("X-DB-Raw: OK");
-    header("X-DB-Parsed: {$inserted}");
-	//If anything should fail/error then run the rollback function to prevent issues on the database and then error
-} catch (Throwable $e) {
-    $pdo->rollBack();
-     mw_log("{$season}: DB error while inserting parsed standings - " . $e->getMessage());
+
+    // 2) Upsert into standings_parsed
+    mw_log("{$season}: starting upsert into standings_parsed");
+
+    try {
+        $pdo->beginTransaction();
+
+        $inserted = 0;
+        $updated  = 0;
+
+        // SportsData standings: root is ArrayOfStanding, children <Standing>
+        foreach ($xml->Standing as $s) {
+
+            $data = [
+                ':endpoint_key'      => $season,                       // same for all standings rows
+                ':SeasonType'        => (int)($s->SeasonType ?? 0),
+                ':Season'            => (int)($s->Season ?? 0),
+                ':Conference'        => (string)($s->Conference ?? ''),
+                ':Division'          => (string)($s->Division ?? ''),
+                ':Team'              => (string)($s->Team ?? ''),      // abbrev
+                ':Name'              => (string)($s->Name ?? ''),
+
+                ':Wins'              => (int)($s->Wins ?? 0),
+                ':Losses'            => (int)($s->Losses ?? 0),
+                ':Ties'              => (int)($s->Ties ?? 0),
+                ':Percentage'        => (float)($s->Percentage ?? 0),
+
+                ':PointsFor'         => (int)($s->PointsFor ?? 0),
+                ':PointsAgainst'     => (int)($s->PointsAgainst ?? 0),
+                ':NetPoints'         => (int)($s->NetPoints ?? 0),
+                ':Touchdowns'        => (int)($s->Touchdowns ?? 0),
+
+                ':DivisionWins'      => (int)($s->DivisionWins ?? 0),
+                ':DivisionLosses'    => (int)($s->DivisionLosses ?? 0),
+                ':ConferenceWins'    => (int)($s->ConferenceWins ?? 0),
+                ':ConferenceLosses'  => (int)($s->ConferenceLosses ?? 0),
+
+                ':TeamID'            => (int)($s->TeamID ?? 0),
+                ':DivisionTies'      => (int)($s->DivisionTies ?? 0),
+                ':ConferenceTies'    => (int)($s->ConferenceTies ?? 0),
+
+                ':GlobalTeamID'      => (int)($s->GlobalTeamID ?? 0),
+                ':DivisionRank'      => (int)($s->DivisionRank ?? 0),
+                ':ConferenceRank'    => (int)($s->ConferenceRank ?? 0),
+
+                ':HomeWins'          => (int)($s->HomeWins ?? 0),
+                ':HomeLosses'        => (int)($s->HomeLosses ?? 0),
+                ':HomeTies'          => (int)($s->HomeTies ?? 0),
+
+                ':AwayWins'          => (int)($s->AwayWins ?? 0),
+                ':AwayLosses'        => (int)($s->AwayLosses ?? 0),
+                ':AwayTies'          => (int)($s->AwayTies ?? 0),
+
+                ':Streak'            => (string)($s->Streak ?? '')
+            ];
+
+            // 1) Check if row already exists for this (endpoint_key, Team)
+            $sqlCheck = "
+                SELECT 1
+                FROM standings_parsed
+                WHERE endpoint_key = :endpoint_key
+                  AND Team         = :Team
+                LIMIT 1
+            ";
+
+            $stmtCheck = $pdo->prepare($sqlCheck);
+            $stmtCheck->execute([
+                ':endpoint_key' => $data[':endpoint_key'],
+                ':Team'         => $data[':Team'],
+            ]);
+
+            $rowExists = (bool)$stmtCheck->fetchColumn();
+
+            if ($rowExists) {
+                // UPDATE existing row
+                $sqlUpdate = "
+                    UPDATE standings_parsed SET
+                        SeasonType        = :SeasonType,
+                        Season            = :Season,
+                        Conference        = :Conference,
+                        Division          = :Division,
+                        Name              = :Name,
+                        Wins              = :Wins,
+                        Losses            = :Losses,
+                        Ties              = :Ties,
+                        Percentage        = :Percentage,
+                        PointsFor         = :PointsFor,
+                        PointsAgainst     = :PointsAgainst,
+                        NetPoints         = :NetPoints,
+                        Touchdowns        = :Touchdowns,
+                        DivisionWins      = :DivisionWins,
+                        DivisionLosses    = :DivisionLosses,
+                        ConferenceWins    = :ConferenceWins,
+                        ConferenceLosses  = :ConferenceLosses,
+                        TeamID            = :TeamID,
+                        DivisionTies      = :DivisionTies,
+                        ConferenceTies    = :ConferenceTies,
+                        GlobalTeamID      = :GlobalTeamID,
+                        DivisionRank      = :DivisionRank,
+                        ConferenceRank    = :ConferenceRank,
+                        HomeWins          = :HomeWins,
+                        HomeLosses        = :HomeLosses,
+                        HomeTies          = :HomeTies,
+                        AwayWins          = :AwayWins,
+                        AwayLosses        = :AwayLosses,
+                        AwayTies          = :AwayTies,
+                        Streak            = :Streak
+                    WHERE endpoint_key = :endpoint_key
+                      AND Team         = :Team
+                ";
+
+                $stmtUpdate = $pdo->prepare($sqlUpdate);
+                $stmtUpdate->execute($data);
+                $updated++;
+            } else {
+                // INSERT new row
+                $sqlInsert = "
+                    INSERT INTO standings_parsed
+                    (`endpoint_key`,`SeasonType`,`Season`,`Conference`,`Division`,`Team`,`Name`,
+                     `Wins`,`Losses`,`Ties`,`Percentage`,
+                     `PointsFor`,`PointsAgainst`,`NetPoints`,`Touchdowns`,
+                     `DivisionWins`,`DivisionLosses`,`ConferenceWins`,`ConferenceLosses`,
+                     `TeamID`,`DivisionTies`,`ConferenceTies`,
+                     `GlobalTeamID`,`DivisionRank`,`ConferenceRank`,
+                     `HomeWins`,`HomeLosses`,`HomeTies`,
+                     `AwayWins`,`AwayLosses`,`AwayTies`,`Streak`)
+                    VALUES
+                    (:endpoint_key,:SeasonType,:Season,:Conference,:Division,:Team,:Name,
+                     :Wins,:Losses,:Ties,:Percentage,
+                     :PointsFor,:PointsAgainst,:NetPoints,:Touchdowns,
+                     :DivisionWins,:DivisionLosses,:ConferenceWins,:ConferenceLosses,
+                     :TeamID,:DivisionTies,:ConferenceTies,
+                     :GlobalTeamID,:DivisionRank,:ConferenceRank,
+                     :HomeWins,:HomeLosses,:HomeTies,
+                     :AwayWins,:AwayLosses,:AwayTies,:Streak)
+                ";
+
+                $stmtInsert = $pdo->prepare($sqlInsert);
+                $stmtInsert->execute($data);
+                $inserted++;
+            }
+        }
+
+        $pdo->commit();
+        mw_log("{$season}: standings_parsed upsert complete; inserted={$inserted}, updated={$updated}");
+
+        // Build response for UI from standings_parsed
+        $stmt = $pdo->prepare("
+            SELECT *
+            FROM standings_parsed
+            WHERE endpoint_key = :endpoint_key
+            ORDER BY Conference, Division, DivisionRank
+        ");
+        $stmt->execute([':endpoint_key' => $season]);
+        $rows  = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $count = count($rows);
+
+        mw_log("{$season}: UI response built with {$count} standings rows");
+
+        echo json_encode([
+            "count" => $count,
+            "rows"  => $rows
+        ]);
+        exit;
+
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        mw_log("{$season}: ERROR - standings_parsed upsert failed: " . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(["error" => "Failed to process standings"]);
+        exit;
+    }
+
+} elseif ($endpoint === 'PlayersByAvailable') {
+    // ==========================================
+    // PlayersByAvailable: cache → players_available_raw, then upsert → players_free_agents
+    // ==========================================
+
+    // 1) Cache raw XML into players_available_raw (key = 'PlayersByAvailable')
+    $playersCacheKey = 'PlayersByAvailable';
+
+    try {
+        mw_log("{$season}: caching raw XML into players_available_raw with key={$playersCacheKey}");
+
+        $stmt = $pdo->prepare("
+            INSERT INTO players_available_raw (cache_key, xml_data)
+            VALUES (:key, :xml)
+            ON DUPLICATE KEY UPDATE
+                xml_data    = VALUES(xml_data),
+                last_updated = CURRENT_TIMESTAMP
+        ");
+
+        $stmt->execute([
+            ':key' => $playersCacheKey,
+            ':xml' => $xmlResponse,
+        ]);
+
+        mw_log("{$season}: raw XML cache successful for players_available_raw");
+    } catch (Throwable $e) {
+        mw_log("players_available_raw insert/update failed for key={$playersCacheKey}: " . $e->getMessage());
+        // Do not abort; continue on to parsed upsert.
+    }
+
+    // 2) Upsert into players_available_raw using PlayerID as UNIQUE key (id is auto-inc PK)
+    mw_log("{$season}: starting upsert into players_available_parsed");
+
+    try {
+        $pdo->beginTransaction();
+
+        $inserted = 0;
+        $updated  = 0;
+		
+		// Each child node is <PlayerBasic>
+        foreach ($xml->PlayerBasic as $p) {
+
+            $data = [
+                ':PlayerID'                          => (int)($p->PlayerID ?? 0),
+                ':Team'                              => (string)($p->Team ?? ''),
+                ':Number'                            => (int)($p->Number ?? 0),
+                ':FirstName'                         => (string)($p->FirstName ?? ''),
+                ':LastName'                          => (string)($p->LastName ?? ''),
+                ':Position'                          => (string)($p->Position ?? ''),
+                ':Status'                            => (string)($p->Status ?? ''),
+                ':Height'                            => (string)($p->Height ?? ''),
+                ':Weight'                            => (int)($p->Weight ?? 0),
+                ':BirthDate'                         => (string)($p->BirthDate ?? ''),
+                ':College'                           => (string)($p->College ?? ''),
+                ':Experience'                        => (string)($p->Experience ?? ''),
+                ':FantasyPosition'                   => (string)($p->FantasyPosition ?? ''),
+                ':Active'                            => isset($p->Active) ? ((string)$p->Active === 'true' ? 1 : 0) : 0,
+                ':PositionCategory'                  => (string)($p->PositionCategory ?? ''),
+                ':Name'                              => (string)($p->Name ?? ''),
+                ':Age'                               => (int)($p->Age ?? 0),
+                ':ShortName'                         => (string)($p->ShortName ?? ''),
+                ':HeightFeet'                        => (int)($p->HeightFeet ?? 0),
+                ':HeightInches'                      => (int)($p->HeightInches ?? 0),
+                ':TeamID'                            => (int)($p->TeamID ?? 0),
+                ':GlobalTeamID'                      => (int)($p->GlobalTeamID ?? 0),
+                ':UsaTodayPlayerID'                  => (int)($p->UsaTodayPlayerID ?? 0),
+                ':UsaTodayHeadshotUrl'               => (string)($p->UsaTodayHeadshotUrl ?? ''),
+                ':UsaTodayHeadshotNoBackgroundUrl'   => (string)($p->UsaTodayHeadshotNoBackgroundUrl ?? ''),
+                ':UsaTodayHeadshotUpdated'           => (string)($p->UsaTodayHeadshotUpdated ?? ''),
+                ':UsaTodayHeadshotNoBackgroundUpdated' => (string)($p->UsaTodayHeadshotNoBackgroundUpdated ?? ''),
+            ];
+			// 1) Check if row already exists for this
+            $sqlCheck = "
+                SELECT 1
+                FROM players_available_parsed
+                WHERE PlayerID = :PlayerID
+                LIMIT 1
+            ";
+			$stmtCheck = $pdo->prepare($sqlCheck);
+			$stmtCheck->execute([
+                ':PlayerID' => $data[':PlayerID']
+            ]);
+			
+			 $rowExists = (bool)$stmtCheck->fetchColumn();
+        // Prepare single upsert statement (INSERT ... ON DUPLICATE KEY UPDATE)
+        if ($rowExists) {
+		// UPDATE existing row
+            $sqlUpdate = "
+            UPDATE players_available_parsed SET (
+                PlayerID        = :PlayerID,
+                Team            = :Team,
+                Number          = :Number,
+                FirstName       = :FirstName,
+                LastName        = :LastName,
+                Position        = :Position,
+                Status          = :Status,
+                Height          = :Height,
+                Weight          = :Weight,
+                BirthDate       = :BirthDate,
+                College         = :College,
+                Experience      = :Experience,
+                FantasyPosition = :FantasyPosition,
+                Active          = :Active,
+                PositionCategory= :PositionCategory,
+                Name            = :Name,
+                Age             = :Age,
+                ShortName       = :ShortName,
+                HeightFeet      = :HeightFeet,
+                HeightInches    = :HeightInches,
+                TeamID          = :TeamID,
+                GlobalTeamID    = :GlobalTeamID,
+                UsaTodayPlayerID= :UsaTodayPlayerID,
+                UsaTodayHeadshotUrl= :UsaTodayHeadshotUrl,
+                UsaTodayHeadshotNoBackgroundUrl= :UsaTodayHeadshotNoBackgroundUrl,
+                UsaTodayHeadshotUpdated= :UsaTodayHeadshotUpdated,
+                UsaTodayHeadshotNoBackgroundUpdated= :UsaTodayHeadshotNoBackgroundUpdated
+				WHERE PlayerID = :PlayerID
+            ";
+
+        } else {
+                // INSERT new row
+                $sqlInsert = "
+                    INSERT INTO players_available_parsed
+                    (`PlayerID`,`Team`,`Number`,`FirstName`,`LastName`,`Position`,`Status`,
+                     `Height`,`Weight`,`BirthDate`,`College`,
+                     `Experience`,`FantasyPosition`,`Active`,`PositionCategory`,
+                     `Name`,`Age`,`ShortName`,`HeightFeet`,
+                     `HeightInches`,`TeamID`,`GlobalTeamID`,
+                     `UsaTodayPlayerID`,`UsaTodayHeadshotUrl`,`UsaTodayHeadshotNoBackgroundUrl`,
+                     `UsaTodayHeadshotUpdated`,`UsaTodayHeadshotNoBackgroundUpdated`)
+                    VALUES
+                    (:PlayerID,:Team,:Number,:FirstName,:LastName,:Position,:Status,
+                     :Height,:Weight,:BirthDate,:College,
+                     :Experience,:FantasyPosition,:Active,:PositionCategory,
+                     :Name,:Age,:ShortName,:HeightFeet,
+                     :HeightInches,:TeamID,:GlobalTeamID,
+                     :UsaTodayPlayerID,:UsaTodayHeadshotUrl,:UsaTodayHeadshotNoBackgroundUrl,
+                     :UsaTodayHeadshotUpdated,:UsaTodayHeadshotNoBackgroundUpdated)
+                ";
+
+                $stmtInsert = $pdo->prepare($sqlInsert);
+                $stmtInsert->execute($data);
+                $inserted++;
+            }
+        }
+
+        $pdo->commit();
+        mw_log("PlayersByAvailable: upsert complete; inserted={$inserted}, updated={$updated}");
+
+        // Build response for UI from players_free_agents
+        $stmt = $pdo->query("
+            SELECT *
+            FROM players_available_parsed
+            ORDER BY LastName, FirstName
+        ");
+
+        $rows  = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $count = count($rows);
+
+        echo json_encode([
+            "count" => $count,
+            "rows"  => $rows
+        ]);
+        exit;
+
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        mw_log("PlayersByAvailable: DB error - " . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(["error" => "Failed to process players"]);
+        exit;
+    }
+
+} else {
     http_response_code(500);
-    echo "ERROR: Failed to store standings in database";
+    echo json_encode(["error" => "Unhandled endpoint"]);
     exit;
 }
-
-// Simple select query to return parsed standings for a given endpoint_key
-//The current app only focuses on the key fields we felt are important
-//It does convert to an xml since that is the output the our current app wants
-//This will be changed later on to pull directly from the database and offer more flexiblity in responses
-//For now this is a simple proof of concept that we can grab the data and filter them
-try {
-	mw_log("{$season}: preparing SELECT from standings sending query to DB");
-    $stmt = $pdo->prepare("
-        SELECT *
-        FROM standings_parsed
-        WHERE endpoint_key = :endpoint_key
-        ORDER BY Division, DivisionRank, Percentage DESC
-    ");
-	mw_log("{$season}: executing SELECT query on DB");
-    $stmt->execute([':endpoint_key' => $season]);
-
-	$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-	
-	$count = count($rows);
-	
-	mw_log("{$season}: SELECT query completed, fetched {$count} rows sending to UI");
-	
-    header('Content-Type: application/json; charset=UTF-8');
-	echo json_encode([
-        "count" => $count,
-        "rows"  => $rows
-    ]);
-	
-    exit;
-} catch (Throwable $e) {
-    http_response_code(500);
-    mw_log("{$season}: ERROR - Failed to fetch standings: " . $e->getMessage());
-    echo json_encode(["error" => "Failed to fetch standings"]);
-    exit;
-}
-
-exit;

@@ -104,14 +104,14 @@
       background: linear-gradient(145deg, #2b2b2b, #1a1a1a);
       border: 1px solid #ffffff11;
     }
-	.bot.wide {
-	  max-width: 100% !important;
-	  width: 100%;
-	  align-self: flex-start;
-	  background: transparent; /* table has its own style */
-	  border: none;
-	  padding: 0;
-	}
+    .bot.wide {
+      max-width: 100% !important;
+      width: 100%;
+      align-self: flex-start;
+      background: transparent;
+      border: none;
+      padding: 0;
+    }
 
     .inputbar {
       display: flex;
@@ -152,9 +152,9 @@
       margin-top: 10px;
       color: #fff;
       font-size: 14px;
-	  background: #0d0d0d;   /* ⬅ NEW: solid black background */
-      border-radius: 8px;     /* optional: cleaner shape */
-      overflow: hidden;       /* ensures rounded corners apply */
+      background: #0d0d0d;
+      border-radius: 8px;
+      overflow: hidden;
     }
     th, td {
       padding: 8px;
@@ -194,11 +194,14 @@
     <div class="messages" id="messages">
       <div class="msg bot">
         Welcome to the <strong>NFL Chat Center</strong>!<br>
-        Type <code>standings</code> to fetch the latest NFL standings.
+        Type <code>standings</code> to fetch the latest NFL standings or
+        <code>players</code> to see available free agent players.
       </div>
     </div>
 
-    <div class="hint">Example: type <code>standings</code></div>
+    <div class="hint">
+      Example: type <code>standings</code> or <code>players</code>
+    </div>
     <form class="inputbar" id="form">
       <input id="prompt" type="text" placeholder="Please ask what you want and press Enter…" autocomplete="off">
       <button id="sendBtn" type="submit">Send</button>
@@ -206,7 +209,7 @@
   </div>
 
   <script>
-  // ===== API Config=====
+  // ===== API Config =====
   const middleware_server_url = "/api/middlewarelogic.php";
   const DEFAULT_KEYWORD = "standings";
 
@@ -216,9 +219,8 @@
 
   function buildUrl(keyword = DEFAULT_KEYWORD) {
     const params = new URLSearchParams({
-      mode: "standings",
-      keyword: keyword
-      // no need to send season if you’re hardcoding it in PHP
+      mode: "standings",      // middleware still expects 'standings' mode
+      keyword: keyword        // 'standings' or 'players'
     });
     return `${middleware_server_url}?${params.toString()}`;
   }
@@ -231,7 +233,6 @@
     messages.scrollTop = messages.scrollHeight;
   }
 
-  // Small helper to avoid HTML injection / broken layout
   function escapeHtml(value) {
     if (value === null || value === undefined) return "";
     return String(value)
@@ -244,93 +245,92 @@
 
   // ===== Generic table renderer for any endpoint =====
   function renderStandingsTable(apiData) {
-  const rows = apiData.rows || [];
-  if (!rows.length) return "<div>No data found.</div>";
+    const rows = apiData.rows || [];
+    if (!rows.length) return "<div>No data found.</div>";
 
-  // 1) Figure out columns: use apiData.columns if provided, otherwise infer
-  let columns;
-  if (Array.isArray(apiData.columns) && apiData.columns.length) {
-    columns = apiData.columns;
-  } else {
-    columns = Object.keys(rows[0]);
-  }
+    // 1) Figure out columns: use apiData.columns if provided, otherwise infer
+    let columns;
+    if (Array.isArray(apiData.columns) && apiData.columns.length) {
+      columns = apiData.columns;
+    } else {
+      columns = Object.keys(rows[0]);
+    }
 
-  // 2) Filter options are just the column names
-  const filterOptions = columns.slice(); // shallow copy
+    // 2) Filter options are just the column names
+    const filterOptions = columns.slice();
 
-  const filterBar = `
-    <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <label for="filterCol"><strong>Filter by:</strong></label>
-      <select id="filterCol" style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
-        <option value="">-- Select column --</option>
-        ${filterOptions.map(o => `<option value="${o}">${o}</option>`).join("")}
-      </select>
-      <input type="text" id="filterInput" placeholder="Enter value..."
-        style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
-      <button type="button" id="applyFilter" style="padding:6px 12px;border-radius:8px;background:linear-gradient(to right,#d50a0a,#a30707);color:#fff;border:none;cursor:pointer;">Apply</button>
-      <button type="button" id="clearFilter" style="padding:6px 12px;border-radius:8px;background:#555;color:#fff;border:none;cursor:pointer;">Clear</button>
-    </div>
-  `;
+    const filterBar = `
+      <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label for="filterCol"><strong>Filter by:</strong></label>
+        <select id="filterCol" style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
+          <option value="">-- Select column --</option>
+          ${filterOptions.map(o => `<option value="${o}">${o}</option>`).join("")}
+        </select>
+        <input type="text" id="filterInput" placeholder="Enter value..."
+          style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
+        <button type="button" id="applyFilter" style="padding:6px 12px;border-radius:8px;background:linear-gradient(to right,#d50a0a,#a30707);color:#fff;border:none;cursor:pointer;">Apply</button>
+        <button type="button" id="clearFilter" style="padding:6px 12px;border-radius:8px;background:#555;color:#fff;border:none;cursor:pointer;">Clear</button>
+      </div>
+    `;
 
-  // 3) Build the table using those dynamic columns
-  const headerHtml = columns
-    .map(col => `<th>${escapeHtml(col)}</th>`)
-    .join("");
+    const headerHtml = columns
+      .map(col => `<th>${escapeHtml(col)}</th>`)
+      .join("");
 
-  const bodyHtml = rows
-    .map(row => {
-      const cells = columns
-        .map(col => `<td>${escapeHtml(row[col])}</td>`)
-        .join("");
-      return `<tr>${cells}</tr>`;
-    })
-    .join("");
+    const bodyHtml = rows
+      .map(row => {
+        const cells = columns
+          .map(col => `<td>${escapeHtml(row[col])}</td>`)
+          .join("");
+        return `<tr>${cells}</tr>`;
+      })
+      .join("");
 
-  const tableHtml = `
-    ${filterBar}
-    <table id="resultsTable">
-      <thead>
-        <tr>${headerHtml}</tr>
-      </thead>
-      <tbody>
-        ${bodyHtml}
-      </tbody>
-    </table>
-  `;
+    const tableHtml = `
+      ${filterBar}
+      <table id="resultsTable">
+        <thead>
+          <tr>${headerHtml}</tr>
+        </thead>
+        <tbody>
+          ${bodyHtml}
+        </tbody>
+      </table>
+    `;
 
-  // 4) Wire up the filter behavior *after* the HTML is injected
-  setTimeout(() => {
-    const filterCol  = document.getElementById("filterCol");
-    const filterInput = document.getElementById("filterInput");
-    const applyBtn   = document.getElementById("applyFilter");
-    const clearBtn   = document.getElementById("clearFilter");
-    const table      = document.getElementById("resultsTable");
+    // Wire filter behavior after DOM insert
+    setTimeout(() => {
+      const filterCol  = document.getElementById("filterCol");
+      const filterInput = document.getElementById("filterInput");
+      const applyBtn   = document.getElementById("applyFilter");
+      const clearBtn   = document.getElementById("clearFilter");
+      const table      = document.getElementById("resultsTable");
 
-    if (!filterCol || !filterInput || !applyBtn || !clearBtn || !table) return;
+      if (!filterCol || !filterInput || !applyBtn || !clearBtn || !table) return;
 
-    applyBtn.addEventListener("click", () => {
-      const col = filterCol.value;
-      const val = filterInput.value.trim().toLowerCase();
-      if (!col || !val) return;
+      applyBtn.addEventListener("click", () => {
+        const col = filterCol.value;
+        const val = filterInput.value.trim().toLowerCase();
+        if (!col || !val) return;
 
-      const colIndex = filterOptions.indexOf(col);
-      const rowsEls = table.querySelectorAll("tbody tr");
+        const colIndex = filterOptions.indexOf(col);
+        const rowsEls = table.querySelectorAll("tbody tr");
 
-      rowsEls.forEach(r => {
-        const cellText = (r.children[colIndex]?.textContent || "").toLowerCase();
-        r.style.display = cellText.includes(val) ? "" : "none";
+        rowsEls.forEach(r => {
+          const cellText = (r.children[colIndex]?.textContent || "").toLowerCase();
+          r.style.display = cellText.includes(val) ? "" : "none";
+        });
       });
-    });
 
-    clearBtn.addEventListener("click", () => {
-      filterCol.value = "";
-      filterInput.value = "";
-      table.querySelectorAll("tbody tr").forEach(r => (r.style.display = ""));
-    });
-  }, 0);
+      clearBtn.addEventListener("click", () => {
+        filterCol.value = "";
+        filterInput.value = "";
+        table.querySelectorAll("tbody tr").forEach(r => (r.style.display = ""));
+      });
+    }, 0);
 
-  return tableHtml;
-}
+    return tableHtml;
+  }
 
   // ===== Fetch from your middleware (JSON) =====
   async function fetchStandings(keyword = DEFAULT_KEYWORD) {
@@ -340,11 +340,9 @@
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const data = await res.json();
-
     if (!data || !Array.isArray(data.rows)) {
       throw new Error("Invalid data received from server");
     }
-
     return data; // { count, rows }
   }
 
@@ -360,30 +358,37 @@
 
     const lower = text.toLowerCase();
 
-    // Only respond when user mentions "standings"
-    if (!lower.includes("standings")) {
+    let keyword;
+    let label;
+
+    if (lower.includes("standings")) {
+      keyword = "standings";
+      label   = "Standings";
+    } else if (lower.includes("player")) { // matches "player" or "players"
+      keyword = "players";
+      label   = "Free Agent Players";
+    } else {
       addMsg(
-        'Type <code>standings</code> to fetch the latest NFL standings.',
+        'I currently understand <code>standings</code> and <code>players</code>.',
         "bot"
       );
       return;
     }
 
-    const keyword = "standings"; // what we send to middleware
-    addMsg(`Fetching current NFL ${keyword}…`, "bot");
+    addMsg(`Fetching NFL ${label}…`, "bot");
 
     try {
-      const data = await fetchStandings(keyword); // { count, rows }
+      const data = await fetchStandings(keyword);
       const tableHtml = renderStandingsTable(data);
       const last = messages.lastElementChild;
-		last.classList.add("wide"); 
-		last.innerHTML = `
-		<div>${keyword.charAt(0).toUpperCase() + keyword.slice(1)} — ${data.rows.length} record(s)</div>
-		${tableHtml}
-	`;
+      last.classList.add("wide");
+      last.innerHTML = `
+        <div>${label} — ${data.rows.length} record(s)</div>
+        ${tableHtml}
+      `;
     } catch (err) {
       messages.lastElementChild.innerHTML =
-        `<div class="error">Failed to load ${keyword}: ${err.message}</div>`;
+        `<div class="error">Failed to load ${label}: ${err.message}</div>`;
     }
   });
   </script>
