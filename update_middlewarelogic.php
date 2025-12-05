@@ -183,8 +183,7 @@ if ($endpoint === 'Standings') {
     try {
         $pdo->beginTransaction();
 
-        $inserted = 0;
-        $updated  = 0;
+        $processed = 0;
 
         // SportsData standings: root is ArrayOfStanding, children <Standing>
         foreach ($xml->Standing as $s) {
@@ -231,98 +230,69 @@ if ($endpoint === 'Standings') {
 
                 ':Streak'            => (string)($s->Streak ?? '')
             ];
-
-            // 1) Check if row already exists for this (endpoint_key, Team)
-            $sqlCheck = "
-                SELECT 1
-                FROM standings_parsed
-                WHERE endpoint_key = :endpoint_key
-                  AND Team         = :Team
-                LIMIT 1
+            
+            $sqlUpsert = "
+                INSERT INTO standings_parsed
+                (`endpoint_key`,`SeasonType`,`Season`,`Conference`,`Division`,`Team`,`Name`,
+                 `Wins`,`Losses`,`Ties`,`Percentage`,
+                 `PointsFor`,`PointsAgainst`,`NetPoints`,`Touchdowns`,
+                 `DivisionWins`,`DivisionLosses`,`ConferenceWins`,`ConferenceLosses`,
+                 `TeamID`,`DivisionTies`,`ConferenceTies`,
+                 `GlobalTeamID`,`DivisionRank`,`ConferenceRank`,
+                 `HomeWins`,`HomeLosses`,`HomeTies`,
+                 `AwayWins`,`AwayLosses`,`AwayTies`,`Streak`)
+                VALUES
+                (:endpoint_key,:SeasonType,:Season,:Conference,:Division,:Team,:Name,
+                 :Wins,:Losses,:Ties,:Percentage,
+                 :PointsFor,:PointsAgainst,:NetPoints,:Touchdowns,
+                 :DivisionWins,:DivisionLosses,:ConferenceWins,:ConferenceLosses,
+                 :TeamID,:DivisionTies,:ConferenceTies,
+                 :GlobalTeamID,:DivisionRank,:ConferenceRank,
+                 :HomeWins,:HomeLosses,:HomeTies,
+                 :AwayWins,:AwayLosses,:AwayTies,:Streak)
+                ON DUPLICATE KEY UPDATE
+                    SeasonType = VALUES(SeasonType),
+                    Season = VALUES(Season),
+                    Conference = VALUES(Conference),
+                    Division = VALUES(Division),
+                    Name = VALUES(Name),
+                    Wins = VALUES(Wins),
+                    Losses = VALUES(Losses),
+                    Ties = VALUES(Ties),
+                    Percentage = VALUES(Percentage),
+                    PointsFor = VALUES(PointsFor),
+                    PointsAgainst = VALUES(PointsAgainst),
+                    NetPoints = VALUES(NetPoints),
+                    Touchdowns = VALUES(Touchdowns),
+                    DivisionWins = VALUES(DivisionWins),
+                    DivisionLosses = VALUES(DivisionLosses),
+                    ConferenceWins = VALUES(ConferenceWins),
+                    ConferenceLosses = VALUES(ConferenceLosses),
+                    TeamID = VALUES(TeamID),
+                    DivisionTies = VALUES(DivisionTies),
+                    ConferenceTies = VALUES(ConferenceTies),
+                    GlobalTeamID = VALUES(GlobalTeamID),
+                    DivisionRank = VALUES(DivisionRank),
+                    ConferenceRank = VALUES(ConferenceRank),
+                    HomeWins = VALUES(HomeWins),
+                    HomeLosses = VALUES(HomeLosses),
+                    HomeTies = VALUES(HomeTies),
+                    AwayWins = VALUES(AwayWins),
+                    AwayLosses = VALUES(AwayLosses),
+                    AwayTies = VALUES(AwayTies),
+                    Streak = VALUES(Streak),
+					last_updated = CURRENT_TIMESTAMP
             ";
 
-            $stmtCheck = $pdo->prepare($sqlCheck);
-            $stmtCheck->execute([
-                ':endpoint_key' => $data[':endpoint_key'],
-                ':Team'         => $data[':Team'],
-            ]);
-
-            $rowExists = (bool)$stmtCheck->fetchColumn();
-
-            if ($rowExists) {
-                // UPDATE existing row
-                $sqlUpdate = "
-                    UPDATE standings_parsed SET
-                        SeasonType        = :SeasonType,
-                        Season            = :Season,
-                        Conference        = :Conference,
-                        Division          = :Division,
-                        Name              = :Name,
-                        Wins              = :Wins,
-                        Losses            = :Losses,
-                        Ties              = :Ties,
-                        Percentage        = :Percentage,
-                        PointsFor         = :PointsFor,
-                        PointsAgainst     = :PointsAgainst,
-                        NetPoints         = :NetPoints,
-                        Touchdowns        = :Touchdowns,
-                        DivisionWins      = :DivisionWins,
-                        DivisionLosses    = :DivisionLosses,
-                        ConferenceWins    = :ConferenceWins,
-                        ConferenceLosses  = :ConferenceLosses,
-                        TeamID            = :TeamID,
-                        DivisionTies      = :DivisionTies,
-                        ConferenceTies    = :ConferenceTies,
-                        GlobalTeamID      = :GlobalTeamID,
-                        DivisionRank      = :DivisionRank,
-                        ConferenceRank    = :ConferenceRank,
-                        HomeWins          = :HomeWins,
-                        HomeLosses        = :HomeLosses,
-                        HomeTies          = :HomeTies,
-                        AwayWins          = :AwayWins,
-                        AwayLosses        = :AwayLosses,
-                        AwayTies          = :AwayTies,
-                        Streak            = :Streak
-                    WHERE endpoint_key = :endpoint_key
-                      AND Team         = :Team
-                ";
-
-                $stmtUpdate = $pdo->prepare($sqlUpdate);
-                $stmtUpdate->execute($data);
-                $updated++;
-            } else {
-                // INSERT new row
-                $sqlInsert = "
-                    INSERT INTO standings_parsed
-                    (`endpoint_key`,`SeasonType`,`Season`,`Conference`,`Division`,`Team`,`Name`,
-                     `Wins`,`Losses`,`Ties`,`Percentage`,
-                     `PointsFor`,`PointsAgainst`,`NetPoints`,`Touchdowns`,
-                     `DivisionWins`,`DivisionLosses`,`ConferenceWins`,`ConferenceLosses`,
-                     `TeamID`,`DivisionTies`,`ConferenceTies`,
-                     `GlobalTeamID`,`DivisionRank`,`ConferenceRank`,
-                     `HomeWins`,`HomeLosses`,`HomeTies`,
-                     `AwayWins`,`AwayLosses`,`AwayTies`,`Streak`)
-                    VALUES
-                    (:endpoint_key,:SeasonType,:Season,:Conference,:Division,:Team,:Name,
-                     :Wins,:Losses,:Ties,:Percentage,
-                     :PointsFor,:PointsAgainst,:NetPoints,:Touchdowns,
-                     :DivisionWins,:DivisionLosses,:ConferenceWins,:ConferenceLosses,
-                     :TeamID,:DivisionTies,:ConferenceTies,
-                     :GlobalTeamID,:DivisionRank,:ConferenceRank,
-                     :HomeWins,:HomeLosses,:HomeTies,
-                     :AwayWins,:AwayLosses,:AwayTies,:Streak)
-                ";
-
-                $stmtInsert = $pdo->prepare($sqlInsert);
-                $stmtInsert->execute($data);
-                $inserted++;
-            }
+            $stmtUpsert = $pdo->prepare($sqlUpsert);
+            $stmtUpsert->execute($data);
+            $processed++;
         }
 
         $pdo->commit();
-        mw_log("{$season}: standings_parsed upsert complete; inserted={$inserted}, updated={$updated}");
+        mw_log("{$season}: standings_parsed upsert complete; processed={$processed}");
 
-        // Build response for UI from standings_parsed
+        // Build response for UI
         $stmt = $pdo->prepare("
             SELECT *
             FROM standings_parsed
@@ -350,8 +320,9 @@ if ($endpoint === 'Standings') {
         echo json_encode(["error" => "Failed to process standings"]);
         exit;
     }
-
-} elseif ($endpoint === 'PlayersByAvailable') {
+}
+           
+ elseif ($endpoint === 'PlayersByAvailable') {
     // ==========================================
     // PlayersByAvailable: cache → players_available_raw, then upsert → players_free_agents
     // ==========================================
@@ -422,112 +393,88 @@ if ($endpoint === 'Standings') {
                 ':UsaTodayHeadshotUpdated'           => (string)($p->UsaTodayHeadshotUpdated ?? ''),
                 ':UsaTodayHeadshotNoBackgroundUpdated' => (string)($p->UsaTodayHeadshotNoBackgroundUpdated ?? ''),
             ];
-			// 1) Check if row already exists for this
-            $sqlCheck = "
-                SELECT 1
-                FROM players_available_parsed
-                WHERE PlayerID = :PlayerID
-                LIMIT 1
-            ";
-			$stmtCheck = $pdo->prepare($sqlCheck);
-			$stmtCheck->execute([
-                ':PlayerID' => $data[':PlayerID']
-            ]);
-			
-			 $rowExists = (bool)$stmtCheck->fetchColumn();
-        // Prepare single upsert statement (INSERT ... ON DUPLICATE KEY UPDATE)
-        if ($rowExists) {
-		// UPDATE existing row
-            $sqlUpdate = "
-            UPDATE players_available_parsed SET (
-                PlayerID        = :PlayerID,
-                Team            = :Team,
-                Number          = :Number,
-                FirstName       = :FirstName,
-                LastName        = :LastName,
-                Position        = :Position,
-                Status          = :Status,
-                Height          = :Height,
-                Weight          = :Weight,
-                BirthDate       = :BirthDate,
-                College         = :College,
-                Experience      = :Experience,
-                FantasyPosition = :FantasyPosition,
-                Active          = :Active,
-                PositionCategory= :PositionCategory,
-                Name            = :Name,
-                Age             = :Age,
-                ShortName       = :ShortName,
-                HeightFeet      = :HeightFeet,
-                HeightInches    = :HeightInches,
-                TeamID          = :TeamID,
-                GlobalTeamID    = :GlobalTeamID,
-                UsaTodayPlayerID= :UsaTodayPlayerID,
-                UsaTodayHeadshotUrl= :UsaTodayHeadshotUrl,
-                UsaTodayHeadshotNoBackgroundUrl= :UsaTodayHeadshotNoBackgroundUrl,
-                UsaTodayHeadshotUpdated= :UsaTodayHeadshotUpdated,
-                UsaTodayHeadshotNoBackgroundUpdated= :UsaTodayHeadshotNoBackgroundUpdated
-				WHERE PlayerID = :PlayerID
-            ";
+            
+        // Use INSERT ... ON DUPLICATE KEY UPDATE to handle both insert & update safely
+        $sqlUpsert = "
+        INSERT INTO players_available_parsed
+        (`PlayerID`,`Team`,`Number`,`FirstName`,`LastName`,`Position`,`Status`,
+         `Height`,`Weight`,`BirthDate`,`College`,
+         `Experience`,`FantasyPosition`,`Active`,`PositionCategory`,
+         `Name`,`Age`,`ShortName`,`HeightFeet`,
+         `HeightInches`,`TeamID`,`GlobalTeamID`,
+         `UsaTodayPlayerID`,`UsaTodayHeadshotUrl`,`UsaTodayHeadshotNoBackgroundUrl`,
+         `UsaTodayHeadshotUpdated`,`UsaTodayHeadshotNoBackgroundUpdated`)
+        VALUES
+        (:PlayerID,:Team,:Number,:FirstName,:LastName,:Position,:Status,
+         :Height,:Weight,:BirthDate,:College,
+         :Experience,:FantasyPosition,:Active,:PositionCategory,
+         :Name,:Age,:ShortName,:HeightFeet,
+         :HeightInches,:TeamID,:GlobalTeamID,
+         :UsaTodayPlayerID,:UsaTodayHeadshotUrl,:UsaTodayHeadshotNoBackgroundUrl,
+         :UsaTodayHeadshotUpdated,:UsaTodayHeadshotNoBackgroundUpdated)
+        ON DUPLICATE KEY UPDATE
+			PlayerID = VALUES(PlayerID),
+            Team = VALUES(Team),
+            Number = VALUES(Number),
+            FirstName = VALUES(FirstName),
+            LastName = VALUES(LastName),
+            Position = VALUES(Position),
+            Status = VALUES(Status),
+            Height = VALUES(Height),
+            Weight = VALUES(Weight),
+            BirthDate = VALUES(BirthDate),
+            College = VALUES(College),
+            Experience = VALUES(Experience),
+            FantasyPosition = VALUES(FantasyPosition),
+            Active = VALUES(Active),
+            PositionCategory = VALUES(PositionCategory),
+            Name = VALUES(Name),
+            Age = VALUES(Age),
+            ShortName = VALUES(ShortName),
+            HeightFeet = VALUES(HeightFeet),
+            HeightInches = VALUES(HeightInches),
+            TeamID = VALUES(TeamID),
+            GlobalTeamID = VALUES(GlobalTeamID),
+            UsaTodayPlayerID = VALUES(UsaTodayPlayerID),
+            UsaTodayHeadshotUrl = VALUES(UsaTodayHeadshotUrl),
+            UsaTodayHeadshotNoBackgroundUrl = VALUES(UsaTodayHeadshotNoBackgroundUrl),
+            UsaTodayHeadshotUpdated = VALUES(UsaTodayHeadshotUpdated),
+            UsaTodayHeadshotNoBackgroundUpdated = VALUES(UsaTodayHeadshotNoBackgroundUpdated)
+    ";
 
-        } else {
-                // INSERT new row
-                $sqlInsert = "
-                    INSERT INTO players_available_parsed
-                    (`PlayerID`,`Team`,`Number`,`FirstName`,`LastName`,`Position`,`Status`,
-                     `Height`,`Weight`,`BirthDate`,`College`,
-                     `Experience`,`FantasyPosition`,`Active`,`PositionCategory`,
-                     `Name`,`Age`,`ShortName`,`HeightFeet`,
-                     `HeightInches`,`TeamID`,`GlobalTeamID`,
-                     `UsaTodayPlayerID`,`UsaTodayHeadshotUrl`,`UsaTodayHeadshotNoBackgroundUrl`,
-                     `UsaTodayHeadshotUpdated`,`UsaTodayHeadshotNoBackgroundUpdated`)
-                    VALUES
-                    (:PlayerID,:Team,:Number,:FirstName,:LastName,:Position,:Status,
-                     :Height,:Weight,:BirthDate,:College,
-                     :Experience,:FantasyPosition,:Active,:PositionCategory,
-                     :Name,:Age,:ShortName,:HeightFeet,
-                     :HeightInches,:TeamID,:GlobalTeamID,
-                     :UsaTodayPlayerID,:UsaTodayHeadshotUrl,:UsaTodayHeadshotNoBackgroundUrl,
-                     :UsaTodayHeadshotUpdated,:UsaTodayHeadshotNoBackgroundUpdated)
-                ";
+    $stmtUpsert = $pdo->prepare($sqlUpsert);
+    $stmtUpsert->execute($data);
 
-                $stmtInsert = $pdo->prepare($sqlInsert);
-                $stmtInsert->execute($data);
-                $inserted++;
-            }
-        }
+    // Count rows affected (optional)
+    $inserted++; // since ON DUPLICATE handles update too, you can track differently if desired
+}
 
-        $pdo->commit();
-        mw_log("PlayersByAvailable: upsert complete; inserted={$inserted}, updated={$updated}");
+$pdo->commit();
+mw_log("PlayersByAvailable: upsert complete; processed={$inserted}");
 
-        // Build response for UI from players_free_agents
-        $stmt = $pdo->query("
-            SELECT *
-            FROM players_available_parsed
-            ORDER BY LastName, FirstName
-        ");
+// Build response for UI from players_available_parsed
+$stmt = $pdo->prepare("
+    SELECT *
+    FROM players_available_parsed
+    ORDER BY LastName, FirstName
+");
+$stmt->execute();
+$rows  = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$count = count($rows);
 
-        $rows  = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        $count = count($rows);
+echo json_encode([
+    "count" => $count,
+    "rows"  => $rows
+]);
+exit;
 
-        echo json_encode([
-            "count" => $count,
-            "rows"  => $rows
-        ]);
-        exit;
-
-    } catch (Throwable $e) {
-        if ($pdo->inTransaction()) {
-            $pdo->rollBack();
-        }
-        mw_log("PlayersByAvailable: DB error - " . $e->getMessage());
-        http_response_code(500);
-        echo json_encode(["error" => "Failed to process players"]);
-        exit;
-    }
-
-} else {
-    http_response_code(500);
-    echo json_encode(["error" => "Unhandled endpoint"]);
-    exit;
+} catch (Throwable $e) {
+if ($pdo->inTransaction()) {
+    $pdo->rollBack();
+}
+mw_log("PlayersByAvailable: DB error - " . $e->getMessage());
+http_response_code(500);
+echo json_encode(["error" => "Failed to process players"]);
+exit;
+}
 }

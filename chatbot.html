@@ -239,37 +239,60 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
   }
 
-  // ===== Generic table renderer for any endpoint =====
-  function renderStandingsTable(apiData) {
-    const rows = apiData.rows || [];
-    if (!rows.length) return "<div>No data found.</div>";
+  const MAX_ROWS = 200;
 
-    // 1) Figure out columns: use apiData.columns if provided, otherwise infer
+  // ===== Generic table renderer for any endpoint (full-data filter + 200-row display) =====
+  function renderStandingsTable(apiData) {
+    // unique suffix so multiple tables can coexist independently
+    const uid = "tbl_" + Math.random().toString(36).slice(2, 10);
+
+    const allRows = apiData.rows || [];
+    let currentRows = allRows.slice();  // start with full dataset
+
+    if (!currentRows.length) {
+      return "<div>No data found.</div>";
+    }
+
+    // Determine columns
     let columns;
     if (Array.isArray(apiData.columns) && apiData.columns.length) {
       columns = apiData.columns;
     } else {
-      columns = Object.keys(rows[0]);
+      columns = Object.keys(currentRows[0]);
     }
 
-    // 2) Filter options are just the column names
     const filterOptions = columns.slice();
 
     const filterBar = `
       <div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <label for="filterCol"><strong>Filter by:</strong></label>
-        <select id="filterCol" style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
+        <label for="filterCol_${uid}"><strong>Filter by:</strong></label>
+        <select id="filterCol_${uid}"
+          style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
           <option value="">-- Select column --</option>
           ${filterOptions.map(o => `<option value="${o}">${o}</option>`).join("")}
         </select>
-        <input type="text" id="filterInput" placeholder="Enter value..."
+
+        <input type="text" id="filterInput_${uid}" placeholder="Enter value..."
           style="padding:6px;border-radius:8px;background:#0f172a;color:#fff;border:1px solid #555;">
-        <button type="button" id="applyFilter" style="padding:6px 12px;border-radius:8px;background:linear-gradient(to right,#d50a0a,#a30707);color:#fff;border:none;cursor:pointer;">Apply</button>
-        <button type="button" id="clearFilter" style="padding:6px 12px;border-radius:8px;background:#555;color:#fff;border:none;cursor:pointer;">Clear</button>
+
+        <button type="button" id="applyFilter_${uid}"
+          style="padding:6px 12px;border-radius:8px;background:linear-gradient(to right,#d50a0a,#a30707);
+                 color:#fff;border:none;cursor:pointer;">
+          Apply
+        </button>
+
+        <button type="button" id="clearFilter_${uid}"
+          style="padding:6px 12px;border-radius:8px;background:#555;color:#fff;border:none;cursor:pointer;">
+          Clear
+        </button>
+
+        <span id="rowsInfo_${uid}" style="margin-left:auto;font-size:12px;color:#ccc;"></span>
       </div>
     `;
 
@@ -277,56 +300,84 @@
       .map(col => `<th>${escapeHtml(col)}</th>`)
       .join("");
 
-    const bodyHtml = rows
-      .map(row => {
-        const cells = columns
-          .map(col => `<td>${escapeHtml(row[col])}</td>`)
-          .join("");
-        return `<tr>${cells}</tr>`;
-      })
-      .join("");
-
     const tableHtml = `
       ${filterBar}
-      <table id="resultsTable">
+      <table id="resultsTable_${uid}">
         <thead>
           <tr>${headerHtml}</tr>
         </thead>
-        <tbody>
-          ${bodyHtml}
-        </tbody>
+        <tbody id="resultsTbody_${uid}"></tbody>
       </table>
     `;
 
-    // Wire filter behavior after DOM insert
+    // Wire up this specific table after it is in the DOM
     setTimeout(() => {
-      const filterCol  = document.getElementById("filterCol");
-      const filterInput = document.getElementById("filterInput");
-      const applyBtn   = document.getElementById("applyFilter");
-      const clearBtn   = document.getElementById("clearFilter");
-      const table      = document.getElementById("resultsTable");
+      const filterCol   = document.getElementById(`filterCol_${uid}`);
+      const filterInput = document.getElementById(`filterInput_${uid}`);
+      const applyBtn    = document.getElementById(`applyFilter_${uid}`);
+      const clearBtn    = document.getElementById(`clearFilter_${uid}`);
+      const tbody       = document.getElementById(`resultsTbody_${uid}`);
+      const infoSpan    = document.getElementById(`rowsInfo_${uid}`);
 
-      if (!filterCol || !filterInput || !applyBtn || !clearBtn || !table) return;
+      if (!filterCol || !tbody) return;
 
-      applyBtn.addEventListener("click", () => {
+      function renderTablePage(page = 1) {
+        const total = currentRows.length;
+        const start = (page - 1) * MAX_ROWS;
+        const slice = currentRows.slice(start, start + MAX_ROWS);
+
+        const bodyHtml = slice.map(row => {
+          const cells = columns
+            .map(col => `<td>${escapeHtml(row[col])}</td>`)
+            .join("");
+          return `<tr>${cells}</tr>`;
+        }).join("");
+
+        tbody.innerHTML = bodyHtml;
+
+        if (infoSpan) {
+          const filteredText = (allRows.length === total)
+            ? ""
+            : ` (filtered from ${allRows.length})`;
+          infoSpan.textContent =
+            `Showing ${slice.length} of ${total} row(s)${filteredText}`;
+        }
+      }
+
+      function applyFilterHandler() {
         const col = filterCol.value;
         const val = filterInput.value.trim().toLowerCase();
-        if (!col || !val) return;
 
-        const colIndex = filterOptions.indexOf(col);
-        const rowsEls = table.querySelectorAll("tbody tr");
+        if (!col || !val) {
+          currentRows = allRows.slice();
+        } else {
+          currentRows = allRows.filter(row => {
+            const cell = row[col];
+            const text = (cell === null || cell === undefined)
+              ? ""
+              : String(cell).toLowerCase();
+            return text.includes(val);
+          });
+        }
 
-        rowsEls.forEach(r => {
-          const cellText = (r.children[colIndex]?.textContent || "").toLowerCase();
-          r.style.display = cellText.includes(val) ? "" : "none";
-        });
-      });
+        renderTablePage(1);
+      }
+
+      applyBtn.addEventListener("click", applyFilterHandler);
 
       clearBtn.addEventListener("click", () => {
         filterCol.value = "";
         filterInput.value = "";
-        table.querySelectorAll("tbody tr").forEach(r => (r.style.display = ""));
+        currentRows = allRows.slice();
+        renderTablePage(1);
       });
+
+      filterInput.addEventListener("keyup", (e) => {
+        if (e.key === "Enter") applyFilterHandler();
+      });
+
+      // Initial render
+      renderTablePage(1);
     }, 0);
 
     return tableHtml;
@@ -366,7 +417,7 @@
       label   = "Standings";
     } else if (lower.includes("player")) { // matches "player" or "players"
       keyword = "players";
-      label   = "Free Agent Players";
+      label   = "NFL Players";
     } else {
       addMsg(
         'I currently understand <code>standings</code> and <code>players</code>.',
@@ -383,7 +434,7 @@
       const last = messages.lastElementChild;
       last.classList.add("wide");
       last.innerHTML = `
-        <div>${label} — ${data.rows.length} record(s)</div>
+        <div>${label} — ${data.rows.length} record(s) (showing up to ${MAX_ROWS})</div>
         ${tableHtml}
       `;
     } catch (err) {
@@ -391,6 +442,6 @@
         `<div class="error">Failed to load ${label}: ${err.message}</div>`;
     }
   });
-  </script>
+</script>
 </body>
 </html>
