@@ -211,15 +211,15 @@
   <script>
   // ===== API Config =====
   const middleware_server_url = "/api/middlewarelogic.php";
-  const DEFAULT_KEYWORD = "standings";
+  //const DEFAULT_KEYWORD = "standings";
 
   // ===== Helpers =====
   const $ = s => document.querySelector(s);
   const messages = $("#messages");
 
-  function buildUrl(keyword = DEFAULT_KEYWORD) {
+  function buildUrl(keyword) {
     const params = new URLSearchParams({
-      mode: "standings",      // middleware still expects 'standings' mode
+      mode: keyword,      // middleware still expects 'standings' mode
       keyword: keyword        // 'standings' or 'players'
     });
     return `${middleware_server_url}?${params.toString()}`;
