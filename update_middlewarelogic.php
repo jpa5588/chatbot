@@ -77,10 +77,10 @@ $season = "2024REG";
 
 mw_log("{$season}: starting middleware with mode={$mode}, keyword={$keyword}, endpoint={$endpoint}");
 
-// Only support the standings mode for now
-if ($mode !== 'standings') {
+// Only support the standings or players mode for now
+if ($mode !== 'standings' && $mode !== 'players') {
     http_response_code(400);
-    echo json_encode(["error" => "Unsupported mode. Currently only 'standings' is implemented."]);
+    echo json_encode(["error" => "Unsupported mode. Use 'standings' or 'players'."]);
     exit;
 }
 
